@@ -145,6 +145,8 @@ export class S3ReactConstruct extends Construct {
             certificate: acmCert,
             domainNames,
             logBucket: loggingBucket,
+            enableLogging: true,
+            logIncludesCookies: true,
             defaultRootObject: 'index.html',
             defaultBehavior: {
                 origin: new origins.S3Origin(rootBucket, {
