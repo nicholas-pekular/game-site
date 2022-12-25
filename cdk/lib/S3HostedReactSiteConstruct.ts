@@ -144,6 +144,7 @@ export class S3ReactConstruct extends Construct {
         const cloudfrontDistribution = new cloudfront.Distribution(this, 'CloudFrontDistribution', {
             certificate: acmCert,
             domainNames,
+            logBucket: loggingBucket,
             defaultRootObject: 'index.html',
             defaultBehavior: {
                 origin: new origins.S3Origin(rootBucket, {
