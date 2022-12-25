@@ -1,0 +1,174 @@
+name: "deploy-core-components"
+
+on:
+  push:
+    branches: [main] # add the feature branch if needed for testing
+
+  pull_request:
+    branches: [main]
+    types: [opened]
+
+  release:
+    types: [published, released]
+
+  workflow_dispatch:
+
+env:
+  DEV_ENV_NAME: dev
+  CDK_ENV_CONTEXT: dev
+  AWS_ACCOUNT: ${{ secrets.AWS_ACCOUNT }}
+  AWS_ROLE: ${{ secrets.AWS_CDK_ROLE }}
+  AWS_ROLE_SESSION_NAME: ${{ secrets.AWS_ROLE_SESSION_NAME }}
+  AWS_REGION: us-east-1
+  CDK_WORKING_DIR: cdk
+  PERFORM_AWS_CDK_BOOTSTRAP: true
+  CONFIGURE_NODE: true
+  NODE_VERSION: 16
+  CDK_WORKING_DIRECTORY: ./cdk
+  WEB_DIRECTORY: ./web/tic-tac-toe
+  APP_NAME: GamesSite
+  
+jobs:
+  cdk-bootstrap:
+    name: Perform CDK Bootstrap
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT }}:role/${{ env.AWS_ROLE }}
+          role-duration-seconds: 1200
+          role-session-name: ${{ env.AWS_ROLE_SESSION_NAME }}
+      
+      - name: AWS CDK Bootstrap
+        if: ${{ env.PERFORM_AWS_CDK_BOOTSTRAP }}
+        run: |
+          npm install -g aws-cdk
+          cdk bootstrap aws://$AWS_ACCOUNT/$AWS_REGION
+  
+  synth-cdk-dev:
+    name: Synth CDK Dev
+    needs: [ cdk-bootstrap ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT }}:role/${{ env.AWS_ROLE }}
+          role-duration-seconds: 1200
+          role-session-name: ${{ env.AWS_ROLE_SESSION_NAME }}
+      
+      - name: Configure Node with Specified Version
+        if: ${{ env.CONFIGURE_NODE }}
+        uses: actions/setup-node@v3.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Dependencies
+        run: npm ci
+        working-directory: ${{ env.CDK_WORKING_DIRECTORY }} 
+
+      - name: Unit Test CDK
+        run: npm run test
+        working-directory: ${{ env.CDK_WORKING_DIRECTORY }}
+
+      - name: CDK Synth and Diff
+        run: |
+          npm run cdk -- synth --all --context environment=${{ env.CDK_ENV_CONTEXT }} | tee synth.txt
+          npm run cdk -- diff --all --context environment=${{ env.CDK_ENV_CONTEXT }} --no-color &> diff.txt
+        working-directory: ${{ env.CDK_WORKING_DIRECTORY }}
+        env:
+          AWS_ACCOUNT: ${{ env.AWS_ACCOUNT }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+        shell: bash
+
+  deploy-cdk-dev:
+    name: Deploy CDK Dev
+    needs: [ synth-cdk-dev ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT }}:role/${{ env.AWS_ROLE }}
+          role-duration-seconds: 1200
+          role-session-name: ${{ env.AWS_ROLE_SESSION_NAME }}
+      
+      - name: Configure Node with Specified Version
+        if: ${{ env.CONFIGURE_NODE }}
+        uses: actions/setup-node@v3.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Dependencies
+        run: npm ci
+        working-directory: ${{ env.CDK_WORKING_DIRECTORY }} 
+
+      - name: CDK Deploy
+        run: |
+          npm run cdk -- deploy --all --require-approval never --context environment=${{ env.CDK_ENV_CONTEXT }} | tee deploy_log.txt
+        working-directory: ${{ env.CDK_WORKING_DIRECTORY }}
+        env:
+          AWS_ACCOUNT: ${{ env.AWS_ACCOUNT }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+        shell: bash
+  
+  deploy-web-dev:
+    name: Deploy Website Dev
+    needs: [ deploy-cdk-dev ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT }}:role/${{ env.AWS_ROLE }}
+          role-duration-seconds: 1200
+          role-session-name: ${{ env.AWS_ROLE_SESSION_NAME }}
+      
+      - name: Configure Node with Specified Version
+        if: ${{ env.CONFIGURE_NODE }}
+        uses: actions/setup-node@v3.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Dependencies
+        run: npm ci
+        working-directory: ${{ env.WEB_DIRECTORY }} 
+
+      - name: Set Env Vars
+        run: |
+          echo "ASSET_BUCKET_NAME=$(aws ssm get-parameter --name ${{ env.APP_NAME }}-${{ env.DEV_ENV_NAME }}-assetsBucketName | jq -r '.Parameter.Value')" >> $GITHUB_ENV
+          echo "CF_DISTRIBUTION_ID=$(aws ssm get-parameter --name ${{ env.APP_NAME }}-${{ env.DEV_ENV_NAME }}-cfDistId | jq -r '.Parameter.Value')" >> $GITHUB_ENV
+          echo $ASSET_BUCKET_NAME
+          echo $CF_DISTRIBUTION_ID
+      
+      - name: Build and Deploy the website
+        run: |
+          npm run deploy
+          npm run invalidate
+        working-directory: ${{ env.WEB_DIRECTORY }}
+        env:
+          AWS_ACCOUNT: ${{ env.AWS_ACCOUNT }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+        shell: bash
